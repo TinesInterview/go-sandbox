@@ -1,0 +1,24 @@
+#!/bin/bash
+
+# t/start
+
+# Set script to exit on error
+set -e
+
+# Note: trap should be set early to kill the backend process when the script exits
+trap 'kill $(jobs -p) 2>/dev/null' EXIT
+
+echo "🚀 Starting services..."
+
+# Start backend server
+echo "🐹 Starting Go backend..."
+cd backend
+# Build first, then run the binary directly: `go run` would leave the server
+# running as a grandchild process after this script exits, holding port 8000.
+go build -o build/backend .
+./build/backend & # The & runs it in the background
+
+# Go back to root and start frontend
+cd ..
+echo "⚛️  Starting React frontend..."
+yarn dev

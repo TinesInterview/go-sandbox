@@ -1,0 +1,30 @@
+#!/bin/bash
+
+# t/setup
+
+# Set script to exit on error
+set -e
+
+echo "🚀 Setting up project..."
+
+# Frontend setup
+echo "📦 Installing frontend dependencies..."
+yarn install
+
+# Backend setup
+echo "🐹 Setting up Go backend..."
+
+if ! command -v go &> /dev/null; then
+    echo "❌ go not found. Please install Go from https://go.dev/dl/ and re-run t/setup."
+    exit 1
+fi
+
+cd backend
+
+# Pre-compile the backend so the first t/start is fast and offline-friendly.
+go build -o build/backend .
+
+cd ..
+
+echo "✅ Setup complete!"
+echo "To start the project, run: t/start"
