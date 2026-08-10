@@ -13,9 +13,6 @@ indent_style = tab
 indent_style = space
 indent_size = 2
 
-[go.{mod,sum}]
-indent_style = tab
-
 [*.sh]
 indent_style = space
 indent_size = 2

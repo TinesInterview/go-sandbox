@@ -17,6 +17,16 @@ cd backend
 # running as a grandchild process after this script exits, holding port 8000.
 go build -o build/backend .
 ./build/backend & # The & runs it in the background
+BACKEND_PID=$!
+
+# Fail loudly if the backend died (most likely port 8000 was already taken),
+# rather than starting the frontend and serving a page that can't reach the API.
+sleep 1
+if ! kill -0 $BACKEND_PID 2>/dev/null; then
+    echo "❌ The backend failed to start — see the error above."
+    echo "   If port 8000 is already in use, stop the other process and try again."
+    exit 1
+fi
 
 # Go back to root and start frontend
 cd ..
