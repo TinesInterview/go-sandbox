@@ -18,6 +18,8 @@ t/start
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
+Both applications reload as you edit them, so you can leave `t/start` running: saving a `.go` file rebuilds and restarts the backend, then refresh the page to see the change.
+
 VSCode users: when you open the project, accept the prompt to install the recommended Go extension for full IntelliSense. The Go code lives in `backend/`.
 
 ## Running Tests

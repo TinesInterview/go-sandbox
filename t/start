@@ -5,8 +5,61 @@
 # Set script to exit on error
 set -e
 
-# Note: trap should be set early to kill the backend process when the script exits
-trap 'kill $(jobs -p) 2>/dev/null' EXIT
+BACKEND_DIR="$PWD/backend"
+BACKEND_PIDFILE="$BACKEND_DIR/build/backend.pid"
+
+# Track the backend through a pidfile rather than a variable: the watcher below
+# restarts it from a subshell, so the parent shell cannot see the current PID.
+start_backend() {
+    "$BACKEND_DIR/build/backend" &
+    echo $! > "$BACKEND_PIDFILE"
+    # Forget the job so bash does not print "Terminated" noise when we stop it.
+    disown %% 2>/dev/null || true
+}
+
+stop_backend() {
+    [ -f "$BACKEND_PIDFILE" ] || return 0
+    kill "$(cat "$BACKEND_PIDFILE")" 2>/dev/null || true
+    rm -f "$BACKEND_PIDFILE"
+}
+
+# Rebuild and restart the backend whenever a .go file changes, so edits show up
+# in the browser without restarting this script. Polling with `find` keeps
+# t/setup dependency-free and offline-friendly, and a failed rebuild leaves the
+# running server alone instead of dropping the page.
+watch_backend() {
+    local stamp="$BACKEND_DIR/build/.watch-stamp"
+    touch "$stamp"
+
+    while true; do
+        sleep 1
+        if [ -z "$(find . -name '*.go' ! -name '*_test.go' -newer "$stamp" -print -quit)" ]; then
+            continue
+        fi
+        touch "$stamp"
+
+        echo "🔁 Go change detected, rebuilding backend..."
+        if go build -o build/backend.new .; then
+            mv build/backend.new build/backend
+            stop_backend
+            start_backend
+            echo "✅ Backend restarted."
+        else
+            echo "❌ Backend build failed — fix the error above. Still serving the previous build."
+        fi
+    done
+}
+
+# Note: trap should be set early to kill the backend process when the script
+# exits. stop_backend reads the pidfile, so it also catches the backend the
+# watcher restarted — that one is not this shell's job. INT and TERM are trapped
+# too, so closing the terminal does not leave port 8000 held.
+cleanup() {
+    trap - EXIT INT TERM
+    stop_backend
+    kill $(jobs -p) 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
 
 echo "🚀 Starting services..."
 
@@ -16,8 +69,8 @@ cd backend
 # Build first, then run the binary directly: `go run` would leave the server
 # running as a grandchild process after this script exits, holding port 8000.
 go build -o build/backend .
-./build/backend & # The & runs it in the background
-BACKEND_PID=$!
+start_backend
+BACKEND_PID=$(cat "$BACKEND_PIDFILE")
 
 # Fail loudly if the backend died (most likely port 8000 was already taken),
 # rather than starting the frontend and serving a page that can't reach the API.
@@ -27,6 +80,10 @@ if ! kill -0 $BACKEND_PID 2>/dev/null; then
     echo "   If port 8000 is already in use, stop the other process and try again."
     exit 1
 fi
+
+# Started from backend/, so the watcher's relative paths stay correct.
+watch_backend &
+echo "👀 Watching backend for Go changes — no need to restart this script."
 
 # Go back to root and start frontend
 cd ..
