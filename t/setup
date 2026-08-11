@@ -1,0 +1,45 @@
+#!/bin/bash
+
+# t/setup
+
+# Set script to exit on error
+set -e
+
+echo "🚀 Setting up project..."
+
+# Frontend setup
+if ! command -v yarn &> /dev/null; then
+    echo "❌ yarn not found. Install Node.js 20 or newer from https://nodejs.org/"
+    echo "   then run: corepack enable"
+    exit 1
+fi
+
+echo "📦 Installing frontend dependencies..."
+yarn install
+
+# Backend setup
+echo "🐹 Setting up Go backend..."
+
+if ! command -v go &> /dev/null; then
+    echo "❌ go not found. Please install Go 1.24 or newer from https://go.dev/dl/ and re-run t/setup."
+    exit 1
+fi
+
+# Check the version too, so an old Go fails here with a clear message rather
+# than mid-build. The floor is the `go` directive in backend/go.mod.
+GO_MINOR=$(go env GOVERSION | sed 's/^go1\.\([0-9]*\).*/\1/')
+if [ "$GO_MINOR" -lt 24 ] 2>/dev/null; then
+    echo "❌ Go 1.24 or newer is required. Found: $(go env GOVERSION)"
+    echo "   Download a newer version from https://go.dev/dl/"
+    exit 1
+fi
+
+cd backend
+
+# Pre-compile the backend so the first t/start is fast and offline-friendly.
+go build -o build/backend .
+
+cd ..
+
+echo "✅ Setup complete!"
+echo "To start the project, run: t/start"
