@@ -1,0 +1,143 @@
+#!/bin/bash
+
+# t/start
+
+# Set script to exit on error
+set -e
+
+BACKEND_DIR="$PWD/backend"
+# One pidfile per run ($$ is this script's PID). A second t/start in the same
+# clone must not touch the first one's pidfile, or stopping the second would
+# orphan the first backend with nothing left holding its PID.
+BACKEND_PIDFILE="$BACKEND_DIR/build/backend.$$.pid"
+
+# Track the backend through a pidfile rather than a variable: the watcher below
+# restarts it from a subshell, so the parent shell cannot see the current PID.
+start_backend() {
+    "$BACKEND_DIR/build/backend" &
+    echo $! > "$BACKEND_PIDFILE"
+    # Forget the job so bash does not print "Terminated" noise when we stop it.
+    disown %% 2>/dev/null || true
+}
+
+# Only ever kill a PID that is still our backend. A pidfile left behind by a
+# crashed run (cleanup never ran) can otherwise name a PID the OS has since
+# recycled, and we would kill an unrelated process on someone's machine.
+backend_is_running() {
+    [ -n "$1" ] || return 1
+    case "$(ps -o comm= -p "$1" 2>/dev/null)" in
+        *build/backend) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Wait until the backend is actually serving, or report that it died trying.
+# A fixed sleep cannot do this job: a freshly linked binary takes ~0.6s to reach
+# main() on macOS (the kernel validates the new code signature) while re-running
+# an unchanged one takes ~0.01s, so any single sleep either races the slow case
+# or wastes time in the fast one. Polling for the listening socket covers both,
+# and checking the PID owns it keeps an unrelated process on 8000 from looking
+# like our success.
+wait_backend_ready() {
+    local pid="$1" i=0
+    while [ "$i" -lt 100 ]; do
+        backend_is_running "$pid" || return 1
+        case " $(lsof -nP -iTCP:8000 -sTCP:LISTEN -t 2>/dev/null | tr '\n' ' ') " in
+            *" $pid "*) return 0 ;;
+        esac
+        sleep 0.1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+stop_backend() {
+    [ -f "$BACKEND_PIDFILE" ] || return 0
+    local pid
+    pid=$(cat "$BACKEND_PIDFILE")
+    if backend_is_running "$pid"; then
+        kill "$pid" 2>/dev/null || true
+        # Wait for the port to be released before a replacement tries to bind.
+        local i=0
+        while backend_is_running "$pid" && [ "$i" -lt 50 ]; do
+            sleep 0.1
+            i=$((i + 1))
+        done
+    fi
+    rm -f "$BACKEND_PIDFILE"
+}
+
+# Rebuild and restart the backend whenever a .go file changes, so edits show up
+# in the browser without restarting this script. Polling with `find` keeps
+# t/setup dependency-free and offline-friendly, and a failed rebuild leaves the
+# running server alone instead of dropping the page.
+watch_backend() {
+    local stamp="$BACKEND_DIR/build/.watch-stamp"
+    touch "$stamp"
+
+    while true; do
+        sleep 1
+        if [ -z "$(find . -name '*.go' ! -name '*_test.go' -newer "$stamp" -print -quit)" ]; then
+            continue
+        fi
+        touch "$stamp"
+
+        echo "🔁 Go change detected, rebuilding backend..."
+        if go build -o build/backend.new .; then
+            mv build/backend.new build/backend
+            stop_backend
+            start_backend
+            # Confirm it is serving before claiming success: code that compiles
+            # can still panic on the way up (a bad index in new code), and
+            # "✅ Backend restarted." above a stack trace is a lie.
+            if wait_backend_ready "$(cat "$BACKEND_PIDFILE" 2>/dev/null)"; then
+                echo "✅ Backend restarted."
+            else
+                echo "❌ Backend crashed on startup — see the error above. Fix it and save again."
+            fi
+        else
+            echo "❌ Backend build failed — fix the error above. Still serving the previous build."
+        fi
+    done
+}
+
+# Note: trap should be set early to kill the backend process when the script
+# exits. stop_backend reads the pidfile, so it also catches the backend the
+# watcher restarted — that one is not this shell's job. INT and TERM cover
+# Ctrl-C and `kill`; closing the terminal is handled by SIGHUP reaching the
+# whole process group rather than by this trap.
+cleanup() {
+    trap - EXIT INT TERM
+    stop_backend
+    kill $(jobs -p) 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+echo "🚀 Starting services..."
+
+# Start backend server
+echo "🐹 Starting Go backend..."
+cd backend
+# Build first, then run the binary directly: `go run` would leave the server
+# running as a grandchild process after this script exits, holding port 8000.
+go build -o build/backend .
+start_backend
+BACKEND_PID=$(cat "$BACKEND_PIDFILE")
+
+# Fail loudly if the backend never came up (most likely port 8000 was already
+# taken), rather than starting the frontend and serving a page that can't reach
+# the API.
+if ! wait_backend_ready "$BACKEND_PID"; then
+    echo "❌ The backend failed to start — see the error above."
+    echo "   If port 8000 is already in use, stop the other process and try again."
+    exit 1
+fi
+
+# Started from backend/, so the watcher's relative paths stay correct.
+watch_backend &
+echo "👀 Watching backend for Go changes — no need to restart this script."
+
+# Go back to root and start frontend
+cd ..
+echo "⚛️  Starting React frontend..."
+yarn dev

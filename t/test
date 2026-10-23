@@ -1,0 +1,10 @@
+#!/bin/bash
+
+# t/test
+
+# Set script to exit on error
+set -e
+
+echo "🐹 Running Go tests..."
+cd backend
+go test ./...
